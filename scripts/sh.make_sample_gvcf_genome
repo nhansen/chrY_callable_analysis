@@ -1,0 +1,114 @@
+#!/bin/bash
+
+# When called with one argument (a bgzipped sample gVCF file) variants and confident regions are
+# used to alter the reference to create a new consensus, which is then masked with bedtools
+# maskfasta to replace bases outside the (lifted) confident regions with Ns.
+#
+# If a second and third argument are passed (the path to a "callable regions" file against the
+# reference and a prefix for that callable set), the variants and confident regions are first 
+# intersected against the callable regions before generating and masking the fasta. Also, files are
+# placed in the "samplevcfsandbed_$PREFIX" rather than "samplevcfsandbed" directory.
+
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16g
+#SBATCH --time=1:00:00
+#SBATCH --output=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/logs/make_sample_gvcf_genome.%j.log
+
+module load seqkit
+module load ucsc
+module load bedtools
+module load bcftools
+module load samtools
+
+export SAMPLEVCFDIR=/data/T2T-Y/pseudosexchroms/sampleSpecific
+export REF=/data/Phillippy/t2t-share/assemblies/release/v2.0/chm13v2.0.fasta
+
+# name of sample X/Y gvcf file:
+export SAMPLEGVCF=$1
+# optional callable bed file against the reference:
+export CALLABLEBED=$2
+# optional name for the callable bed file:
+export CALLABLEPREFIX=$3
+
+if [[ x$CALLABLEBED != "x" ]] ; then
+	export BEDVCFDIR=samplevcfsandbeds_$CALLABLEPREFIX
+else
+	export BEDVCFDIR=samplevcfsandbeds
+fi
+
+mkdir -p $BEDVCFDIR
+
+export SAMPLE=`echo $SAMPLEGVCF | sed 's:.*/::' | sed 's/\..*//'`
+
+export GVCFPATH=$SAMPLEVCFDIR/$SAMPLEGVCF
+export HIGHCONFBED=`echo $BEDVCFDIR/$SAMPLEGVCF.highconf.bed | sed 's:.g.vcf.gz::'`
+export HIGHCONFMERGEDBED=`echo $BEDVCFDIR/$SAMPLEGVCF.highconf.merge.sort.bed | sed 's:.g.vcf.gz::'`
+export VCLOWCONFBED=`echo $BEDVCFDIR/$SAMPLEGVCF.lowconf.bed | sed 's:.g.vcf.gz::'`
+export CHAINFILE=`echo $BEDVCFDIR/$SAMPLEGVCF.ref2genome.chain | sed 's:.g.vcf.gz::'`
+export VCHIGHCONFBED=`echo $BEDVCFDIR/$SAMPLEGVCF.highconf.vc.bed | sed 's:.g.vcf.gz::'`
+export VCHIGHCONFUNMAPPED=`echo $BEDVCFDIR/$SAMPLEGVCF.highconf.unmapped | sed 's:.g.vcf.gz::'`
+export SAMPLEVCFFILE=`echo $BEDVCFDIR/$SAMPLEGVCF.sample.vcf | sed 's:.g.vcf.gz::'`
+export DIFFLENGTHFASTA=`echo $BEDVCFDIR/$SAMPLEGVCF.vc.difflength.fasta | sed 's:.g.vcf.gz::'`
+export VARIANTCONSTRUCTEDFASTA=`echo $BEDVCFDIR/$SAMPLEGVCF.vc.fasta | sed 's:.g.vcf.gz::'`
+export VCGENOMEBED=`echo $BEDVCFDIR/$SAMPLEGVCF.vc.genome.bed | sed 's:.g.vcf.gz::'`
+export MASKEDVCFASTA=`echo $BEDVCFDIR/$SAMPLEGVCF.vc.masked.fasta | sed 's:.g.vcf.gz::'`
+export CHROMXVARIANTCONSTRUCTEDFASTA=`echo $BEDVCFDIR/$SAMPLEGVCF.vc.chrX.fasta.gz | sed 's:.g.vcf.gz::'`
+export CHROMYVARIANTCONSTRUCTEDFASTA=`echo $BEDVCFDIR/$SAMPLEGVCF.vc.chrY.fasta.gz | sed 's:.g.vcf.gz::'`
+
+echo $GVCFPATH
+echo $HIGHCONFBED
+echo $CHAINFILE
+echo $SAMPLEVCFFILE
+echo $DIFFLENGTHFASTA
+echo $VARIANTCONSTRUCTEDFASTA
+
+# high confidence bedfile
+bcftools query -i 'GT="R" && INFO/END!="."' -f '[%CHROM\t%POS0\t%INFO/END\t%GQ\n]' $GVCFPATH | awk -F"\t" '{OFS="\t"; print $1, $2, $3}' | awk -F"\t" '$2>=0 {print} $2<0 {OFS="\t"; print $1, 0, $3}' > $HIGHCONFBED
+bcftools query -i 'INFO/END="."' -f '[%CHROM\t%POS0\t%END\t%GQ\n]' $GVCFPATH | awk -F"\t" '{OFS="\t"; print $1, $2, $3}' | awk -F"\t" '$2>=0 {print} $2<0 {OFS="\t"; print $1, 0, $3}' >> $HIGHCONFBED
+
+bedtools sort -i $HIGHCONFBED | bedtools merge -i - > $HIGHCONFMERGEDBED
+
+# sample VCF file
+bcftools head $GVCFPATH > $SAMPLEVCFFILE
+bcftools query -i 'GT!="R"' -f '%LINE' $GVCFPATH >> $SAMPLEVCFFILE
+bgzip $SAMPLEVCFFILE
+tabix -p vcf $SAMPLEVCFFILE.gz
+
+# if a callable mask was specified, intersect variants and high confidence regions with the mask:
+if [[ x$CALLABLEBED != "x" ]] ; then
+	export NOMASKCONFBED=`echo $HIGHCONFMERGEDBED | sed 's/.bed$/.withnoncallable.bed/'`
+	mv $HIGHCONFMERGEDBED $NOMASKCONFBED
+	bedtools intersect -a $NOMASKCONFBED -b $CALLABLEBED | sort -k1,1 -k2,2n | bedtools merge -i - > $HIGHCONFMERGEDBED
+	export NOMASKSAMPLEVCF=`echo $SAMPLEVCFFILE | sed 's/.vcf$/.withnoncallable.vcf/'`
+	mv $SAMPLEVCFFILE.gz $NOMASKSAMPLEVCF.gz
+	mv $SAMPLEVCFFILE.gz.tbi $NOMASKSAMPLEVCF.gz.tbi
+	bcftools head $GVCFPATH > $SAMPLEVCFFILE
+	bedtools intersect -wa -a $NOMASKSAMPLEVCF.gz -b $CALLABLEBED >> $SAMPLEVCFFILE
+	bgzip $SAMPLEVCFFILE
+	tabix -p vcf $SAMPLEVCFFILE.gz
+fi
+
+bcftools consensus -c $CHAINFILE -f $REF $SAMPLEVCFFILE.gz | sed 's/\*//g' > $DIFFLENGTHFASTA
+seqkit seq -w 80 $DIFFLENGTHFASTA > $VARIANTCONSTRUCTEDFASTA
+samtools faidx $VARIANTCONSTRUCTEDFASTA
+
+# lift highconf bed files to new consensus and subtract from genome:
+liftOver $HIGHCONFMERGEDBED $CHAINFILE $VCHIGHCONFBED $VCHIGHCONFUNMAPPED
+
+awk -F"\t" '{OFS="\t"; print $1, "0", $2}' $VARIANTCONSTRUCTEDFASTA.fai > $VCGENOMEBED
+bedtools subtract -a $VCGENOMEBED -b $VCHIGHCONFBED > $VCLOWCONFBED
+
+# mask the variant constructed fasta file's low confidence regions:
+bedtools maskfasta -fi $VARIANTCONSTRUCTEDFASTA -bed $VCLOWCONFBED -fo $MASKEDVCFASTA
+bgzip $MASKEDVCFASTA
+samtools faidx $MASKEDVCFASTA.gz
+
+# extract X and Y separately:
+samtools faidx $MASKEDVCFASTA.gz chrX | bgzip -c > $CHROMXVARIANTCONSTRUCTEDFASTA
+samtools faidx $CHROMXVARIANTCONSTRUCTEDFASTA
+
+samtools faidx $MASKEDVCFASTA.gz chrY | bgzip -c > $CHROMYVARIANTCONSTRUCTEDFASTA
+samtools faidx $CHROMYVARIANTCONSTRUCTEDFASTA
+
+rm $DIFFLENGTHFASTA $VARIANTCONSTRUCTEDFASTA $VARIANTCONSTRUCTEDFASTA.fai
+

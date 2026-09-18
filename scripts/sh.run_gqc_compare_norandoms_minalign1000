@@ -1,0 +1,47 @@
+#!/bin/bash
+
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=32g
+#SBATCH --time=1-0
+#SBATCH --output=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/logs/run_gqc_compare_nr.%j.log
+
+module load bedtools
+module load minimap2
+module load R
+
+export PREFIX='chm13v2.0'
+
+export SAMPLE=$1
+export MASK=$2
+
+source /data/Phillippy/projects/HG002_diploid/benchmarking/github/GQC/venv/bin/activate
+export PATH=/data/Phillippy/projects/HG002_diploid/benchmarking/github/FastK_GM_021425:$PATH
+export ASSEMBLYDIR=/data/T2T-Y/pseudosexchroms/verkko2xys
+if [[ x$MASK != "x" ]]; then
+	export COMPDIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/comparisons_norandoms_minalign1000_with_$MASK
+	export MASKEDFASTADIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/samplevcfsandbeds_$MASK
+else
+	export COMPDIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/comparisons_norandoms_minalign1000
+	export MASKEDFASTADIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/samplevcfsandbeds
+fi
+
+export SAMPLEMASKEDFASTA=$MASKEDFASTADIR/$SAMPLE.haploidXY.vc.chrY.fasta.gz
+
+if [[ ! -e $SAMPLEMASKEDFASTA ]]; then
+	echo "$SAMPLEMASKEDFASTA does not exist!"
+	exit
+fi
+
+mkdir -p $COMPDIR/$SAMPLE
+cd $COMPDIR/$SAMPLE
+
+if [ ! -e $ASSEMBLYDIR/$SAMPLE ]; then
+	echo "No verkko assembly directory for sample $SAMPLE"
+	rmdir $COMPDIR/$SAMPLE
+	exit 0;
+fi
+
+ln -s $ASSEMBLYDIR/$SAMPLE/$SAMPLE.verkko2.chrY.norandom.fasta.gz* ./
+
+python /data/Phillippy/projects/HG002_diploid/benchmarking/github/GQC/GQC/compare.py -t 2 --haploid --r1fasta $SAMPLE.verkko2.chrY.norandom.fasta.gz --q1fasta $SAMPLEMASKEDFASTA -p $SAMPLE\_chrY.norandom\_verkko4bestcurY_vs_pseudo -R verkko4_$SAMPLE\_chrYnorandom -Q pseudo_$SAMPLE\_chrY --aligner minimap2 --splitdistance 500 --minalignlength 1000 --debug
+
