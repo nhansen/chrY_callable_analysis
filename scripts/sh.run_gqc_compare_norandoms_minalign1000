@@ -1,28 +1,31 @@
 #!/bin/bash
 
 #SBATCH --cpus-per-task=2
-#SBATCH --mem=32g
-#SBATCH --time=1-0
-#SBATCH --output=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/logs/run_gqc_compare_nr.%j.log
+#SBATCH --mem=16g
+#SBATCH --time=2:00:00
+#SBATCH --output=/scratch/jhu/aphill27/projects/T2Tgenomes/t2t-chrY/variants/pseudoY_analysis/new_gqc_comp_with_errorbase_masking/logs/run_gqc_compare_nr.%j.log
+
+# to be run on JHU skipjack cluster:
 
 module load bedtools
 module load minimap2
+module load FASTK
 module load R
-
-export PREFIX='chm13v2.0'
+module load GQC
 
 export SAMPLE=$1
 export MASK=$2
 
-source /data/Phillippy/projects/HG002_diploid/benchmarking/github/GQC/venv/bin/activate
-export PATH=/data/Phillippy/projects/HG002_diploid/benchmarking/github/FastK_GM_021425:$PATH
-export ASSEMBLYDIR=/data/T2T-Y/pseudosexchroms/verkko2xys
+export TOPDIR=/scratch/jhu/aphill27/projects/T2Tgenomes/t2t-chrY/variants/pseudoY_analysis/new_gqc_comp_with_errorbase_masking
+export ASSEMBLYDIR=/scratch/jhu/aphill27/projects/T2Tgenomes/t2t-chrY/variants/pseudoY_analysis/from_biowulf_t2ty/verkko2xys
+export VCFASTADIR=/scratch/jhu/aphill27/projects/T2Tgenomes/t2t-chrY/variants/pseudoY_analysis/from_biowulf_t2ty/samplegvcf_with_masking
+export ANNOTDIR=/scratch/jhu/aphill27/projects/T2Tgenomes/t2t-chrY/variants/pseudoY_analysis/from_biowulf_t2ty/t2tv2
 if [[ x$MASK != "x" ]]; then
-	export COMPDIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/comparisons_norandoms_minalign1000_with_$MASK
-	export MASKEDFASTADIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/samplevcfsandbeds_$MASK
+	export COMPDIR=$TOPDIR/comparisons_norandoms_minalign1000_with_$MASK
+	export MASKEDFASTADIR=$VCFASTADIR/samplevcfsandbeds_$MASK
 else
-	export COMPDIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/comparisons_norandoms_minalign1000
-	export MASKEDFASTADIR=/data/T2T-Y/pseudosexchroms/samplegvcf_with_masking/samplevcfsandbeds
+	export COMPDIR=$TOPDIR/comparisons_norandoms_minalign1000
+	export MASKEDFASTADIR=$VCFASTADIR/samplevcfsandbeds
 fi
 
 export SAMPLEMASKEDFASTA=$MASKEDFASTADIR/$SAMPLE.haploidXY.vc.chrY.fasta.gz
@@ -41,7 +44,19 @@ if [ ! -e $ASSEMBLYDIR/$SAMPLE ]; then
 	exit 0;
 fi
 
-ln -s $ASSEMBLYDIR/$SAMPLE/$SAMPLE.verkko2.chrY.norandom.fasta.gz* ./
+export UNMASKEDVERKKOFASTA=$ASSEMBLYDIR/$SAMPLE/$SAMPLE.verkko2.chrY.norandom.fasta.gz
+export UNMASKEDLOCALFASTA=$COMPDIR/$SAMPLE/$SAMPLE.verkko2.chrY.norandom.fasta
+export MASKEDVERKKOFASTA=$COMPDIR/$SAMPLE/$SAMPLE.verkko2.chrY.norandom.errormasked.fasta
 
-python /data/Phillippy/projects/HG002_diploid/benchmarking/github/GQC/GQC/compare.py -t 2 --haploid --r1fasta $SAMPLE.verkko2.chrY.norandom.fasta.gz --q1fasta $SAMPLEMASKEDFASTA -p $SAMPLE\_chrY.norandom\_verkko4bestcurY_vs_pseudo -R verkko4_$SAMPLE\_chrYnorandom -Q pseudo_$SAMPLE\_chrY --aligner minimap2 --splitdistance 500 --minalignlength 1000 --debug
+# First mask out regions of the verkko assembly that are annotated as "ERRBASE":
+export SAMPLEANNOTFILE=$ANNOTDIR/$SAMPLE.t2tv2.chrY-regions.ngaps.err-struct-base.bed
+export ERRBASESAMPLEANNOTFILE=$COMPDIR/$SAMPLE/$SAMPLE.t2tv2.chrY-regions.ngaps.err-struct-base.ERRBASE.bed
+
+awk -F"\t" '$4=="ERRBASE" {OFS="\t"; print $1, $2, $3, $4}' $SAMPLEANNOTFILE > $ERRBASESAMPLEANNOTFILE
+gunzip -c $UNMASKEDVERKKOFASTA > $UNMASKEDLOCALFASTA
+bedtools maskfasta -fi $UNMASKEDLOCALFASTA -bed $ERRBASESAMPLEANNOTFILE -fo $MASKEDVERKKOFASTA
+bgzip $MASKEDVERKKOFASTA
+samtools faidx $MASKEDVERKKOFASTA.gz
+
+assemblycompare -t 2 --haploid --r1fasta $MASKEDVERKKOFASTA.gz --q1fasta $SAMPLEMASKEDFASTA -p $SAMPLE\_chrY.norandom\_verkko4bestcurYerrmasked_vs_pseudo -R verkko4_$SAMPLE\_chrYnorandom -Q pseudo_$SAMPLE\_chrY --aligner minimap2 --splitdistance 500 --minalignlength 1000 --debug
 
