@@ -1,0 +1,39 @@
+#!/bin/bash
+
+for category in `cat categories.txt`; do 
+	export CATEGORY=$category
+	for tallyfile in `ls sample_category_tallies_norandom_minalign1000_refannot_errorbase_masking*txt`; do
+		export MASK=`echo $tallyfile | sed 's:sample_category_tallies_norandom_minalign1000_refannot_errorbase_masking.::' | sed 's:_regions_only::' | sed 's/.txt//'`
+		if [[ $MASK == "txt" ]]; then
+			export MASK="unmasked"
+		fi
+		export NUMSAMPLES=`awk -F"\t" '{print $1}' $tallyfile | sort | uniq | wc -l`
+		export TOTALCAT=`awk -F"\t" 'ENVIRON["CATEGORY"]==$2 {sumcat += $4} END {print sumcat}' $tallyfile`
+		export TOTALCOV=`awk -F"\t" 'ENVIRON["CATEGORY"]==$2 {sumcov += $3} END {print sumcov}' $tallyfile`
+		export TOTALDISCS=`awk -F"\t" 'ENVIRON["CATEGORY"]==$2 {totdiscs += $6} END {print totdiscs}' $tallyfile`
+		export AVGCAT=`echo "$TOTALCAT/$NUMSAMPLES" | bc`
+		export AVGCOV=`echo "$TOTALCOV/$NUMSAMPLES" | bc`
+		export AVGDISCS=`echo "$TOTALDISCS/$NUMSAMPLES" | bc`
+		if [[ $TOTALCAT -gt 0 ]]; then
+			export PERCCOV=`echo "scale=4; $TOTALCOV/$TOTALCAT*100" | bc`
+		else
+			export PERCCOV="NA"
+		fi
+
+		if [[ $TOTALCOV -gt 0 ]]; then
+			export ERRORRATE=`echo "scale=8; $TOTALDISCS/$TOTALCOV" | bc`
+		else
+			export ERRORRATE="NA"
+		fi
+
+		if [[ $TOTALDISCS -gt 0 && $ERRORRATE != "NA" ]]; then
+			export CATQV=`echo "scale=4; -10.0*(l($TOTALDISCS) - l($TOTALCOV))/l(10.0)" | bc -l`
+		elif [[ $ERRORRATE == "NA" ]]; then
+			export CATQV="NA"
+		else
+			export CATQV="Inf"
+		fi
+		echo -e "$CATEGORY\t$MASK\t$AVGCAT\t$AVGCOV\t$AVGDISCS\t$ERRORRATE\t$PERCCOV\t$CATQV"
+	done
+done
+

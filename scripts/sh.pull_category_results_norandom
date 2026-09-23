@@ -1,0 +1,64 @@
+#!/bin/bash
+# Script to:
+#    For each sample:
+#        1. Create a "vcgenomecovered" BED file with VC genome regions that are aligned
+#           to the corresponding verkko2 Y assembly by GQC compare
+#        2. Intersect the discrepancies BED file with these covered regions to get 
+#           discrepancies within alignments to these regions
+#        3. Calculate the coverage, discrepancy rate and QV for the sample as a whole
+#        4. For each annotation type:
+#           a. Intersect the coverage and discrepancy BED files with the regions
+#              for that annotation
+#           b. Calculate a category-specific coverage, discrepancy rate and QV for 
+#              non-issue assembly regions with that annotation
+#
+
+module load bedtools
+
+export CATFILE=$1
+export MASKTYPE=$2
+
+if [[ x$CATFILE == "x" ]]; then
+    echo "Pass a category file as an argument"
+    exit
+fi
+
+export COMPDIR=/scratch/jhu/aphill27/projects/T2Tgenomes/t2t-chrY/variants/pseudoY_analysis/new_gqc_comp_with_errorbase_masking/comparisons_norandoms_minalign1000
+export OUTPUTDIR=bedfilesnorandomminalign1000
+export BEDDIR=/scratch/jhu/aphill27/projects/T2Tgenomes/t2t-chrY/variants/pseudoY_analysis/from_biowulf_t2ty/samplegvcf_with_masking/samplevcfsandbeds
+
+if [[ x$MASKTYPE != "x" ]]; then
+	export COMPDIR=$COMPDIR\_with_$MASKTYPE
+	export OUTPUTDIR=$OUTPUTDIR\_$MASKTYPE
+	export BEDDIR=$BEDDIR\_$MASKTYPE
+	echo $COMPDIR $OUTPUTDIR $BEDDIR
+fi
+
+mkdir -p $OUTPUTDIR
+
+# first do just main:
+for sample in `ls -d $COMPDIR/*/*/*refdiscrepancies.sort.bed | sed 's:.*/::' | awk -F"_" '{print $2}' | sort | uniq`; do
+    export SAMPLE=$sample
+    export SAMPLEANNOT=$BEDDIR/$SAMPLE.chm13v2.0_chrY_sequence_class_v1.paper_categories.vcgenome.bed
+
+    if [[ ! -e $SAMPLEANNOT ]]; then
+	    echo "No lifted annotations for sample $SAMPLE!"
+	    exit
+    fi
+
+    export ALIGNFILE=$COMPDIR/$SAMPLE/$SAMPLE\_chrY.norandom_verkko4bestcurYerrmasked_vs_pseudo/verkko4_$SAMPLE\_chrYnorandom_vs_pseudo_$SAMPLE\_chrY.querycovered.sort.bed
+    export DISCREPFILE=$COMPDIR/$SAMPLE/$SAMPLE\_chrY.norandom_verkko4bestcurYerrmasked_vs_pseudo/q1_to_r1.querydiscrepancies.bed
+    if [[ -e $DISCREPFILE ]]; then
+        for category in `awk -F"\t" '{print $1}' $CATFILE`; do
+            export CATEGORY=$category
+	    if [[ ! -e $ALIGNFILE ]]; then
+		    echo "Skipping "$SAMPLE"--no alignment file!"
+	    else
+		echo "Will pull annotations from $SAMPLEANNOT and intersect aligns and discrepancies"
+	        awk -F"\t" '$4==ENVIRON["CATEGORY"] {print}' $SAMPLEANNOT > $OUTPUTDIR/$SAMPLE.vc_chrY.$CATEGORY.bed
+                bedtools intersect -a $DISCREPFILE -b $OUTPUTDIR/$SAMPLE.vc_chrY.$CATEGORY.bed > $OUTPUTDIR/$SAMPLE.vc_chrY.$CATEGORY.querydiscrepancies.bed
+                bedtools intersect -a $ALIGNFILE -b $OUTPUTDIR/$SAMPLE.vc_chrY.$CATEGORY.bed > $OUTPUTDIR/$SAMPLE.vc_chrY.$CATEGORY.querycovered.bed
+	    fi
+        done
+    fi
+done

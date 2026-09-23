@@ -1,0 +1,51 @@
+#!/bin/bash
+
+module load bedtools
+
+export CATFILE=$1
+export MASKTYPE=$2
+
+if [[ x$MASKTYPE == "x" ]]; then
+	export BEDDIR=bedfilesnorandomminalign1000
+else
+	export BEDDIR=bedfilesnorandomminalign1000_$MASKTYPE
+fi
+
+# header:
+echo -e "CATEGORY\tAVGCOVEREDBASES\tTOTALCATBASES\tAVGPERCCOVERED\tNUMDISCREPANCIES\tCOVEREDBASES\tERRORRATE\tQV"
+for category in `cat $CATFILE`; do
+    export CATEGORY=$category
+    for file in `ls $BEDDIR/*.vc_chrY.$CATEGORY.querycovered.bed`; do
+	export UNIQQUERYCOVERED=`echo $file | sed 's/.bed/.merge.sort.bed/'`
+	bedtools sort -i $file | bedtools merge -i - > $UNIQQUERYCOVERED
+        export COVEREDBASES=`awk -F"\t" 'BEGIN {sum=0} {sum += $3-$2} END {print sum}' $UNIQQUERYCOVERED`
+        export DISCFILE=`echo $file | sed 's/.querycovered.bed/.querydiscrepancies.bed/'`;
+        export NUMDISCS=`cat $DISCFILE | wc -l`; 
+        export SAMPLE=`echo $file | sed 's:.*/::' | sed 's/.querycovered.bed//' | awk -F"." '{print $1}'`;
+	export UNIQCATEGORY=$BEDDIR/$SAMPLE.vc_chrY.$CATEGORY.merge.sort.bed
+	bedtools sort -i $BEDDIR/$SAMPLE.vc_chrY.$CATEGORY.bed | bedtools merge -i - > $UNIQCATEGORY
+        export TOTALCATBASES=`awk -F"\t" 'BEGIN {sum=0} {sum += $3-$2} END {print sum}' $UNIQCATEGORY`;
+
+	if [[ $TOTALCATBASES -gt 0 ]]; then
+	    export PERCCOVERED=`echo "scale=4; $COVEREDBASES/$TOTALCATBASES*100" | bc`
+	else
+            export PERCCOVERED="NA"
+	fi
+
+	if [[ $COVEREDBASES -gt 0 ]]; then
+	    export ERRORRATE=`echo "scale=8; $NUMDISCS/$COVEREDBASES" | bc`
+	else
+            export ERRORRATE="NA"
+	fi
+
+	if [[ $NUMDISCS -gt 0 && $ERRORRATE != "NA" ]]; then
+	    export CATQV=`echo "scale=4; -10.0*(l($NUMDISCS) - l($COVEREDBASES))/l(10.0)" | bc -l`
+	elif [[ $ERRORRATE == "NA" ]]; then
+            export CATQV="NA"
+	else
+            export CATQV="Inf"
+	fi
+
+        echo -e $SAMPLE"\t"$CATEGORY"\t"$COVEREDBASES"\t"$TOTALCATBASES"\t"$PERCCOVERED"\t"$NUMDISCS"\t"$COVEREDBASES"\t"$ERRORRATE"\t"$CATQV;
+    done
+done
